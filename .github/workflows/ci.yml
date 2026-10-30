@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+          components: rustfmt
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # 版本必须与 README「环境安装」锁定的一致：
+      # 可重复性验收（同输入同工具两跑 SHA256 一致）依赖这一点。
+      # 用 bash 调用而非 ./ 直接执行：仓库在 Windows（core.filemode 不记录执行位）下维护。
+      - name: 安装锁版工具链（svd2rust 0.37.1 / svdtools 0.5.0 / form 0.13.0）
+        run: bash scripts/tool_install.sh
+
+      - name: crate 骨架（makecrates.py）
+        run: make crates
+
+      - name: 校验（vendor 非阻断 / 补丁后阻断）
+        run: make validate
+
+      - name: 生成 PAC（svd2rust + form 拆分）
+        run: make pacs
+
+      - name: 编译 PAC（真 cargo check，不是只看生成成功）
+        run: make check
+
+      - name: 回归比对（关键地址/中断 vs 基准快照）
+        run: make regression
+
+      - name: 差异报告（原厂 vs 补丁后）
+        run: make diff-report
+
+      - name: 可重复性验收（两次生成 SHA256 一致）
+        run: make repro-check
+
+      - name: 归档产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            build/reports/
+            build/repro-1.sha256
+            build/repro-2.sha256
+          if-no-files-found: ignore

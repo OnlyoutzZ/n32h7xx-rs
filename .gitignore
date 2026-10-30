@@ -1,0 +1,24 @@
+# 生成产物（补丁后 SVD / 差异报告 / probe-rs target / 重现校验哈希）
+build/
+
+# svd2rust --settings 的生成文件（make 重新生成）
+settings/
+
+# 生成的 PAC crate（crate 直接在仓库根、产物不入库）
+/n32h7/
+
+# 回归测试的「当前」快照（每次由 make regression 重新生成）
+regression/current/
+
+# Python
+__pycache__/
+*.pyc
+
+# Rust
+target/
+
+# 厂商 DFP 包与 pack 描述文件：二进制分发条款不明确，不入公开仓库。
+# 需要生成 probe-rs target 时，自行从 Nationstech 下载 pack：
+#   make target_<型号>   # 依赖 svd/vendor/Nationstech.N32H7xx_DFP.1.3.0.pack
+svd/vendor/*.pack
+svd/vendor/*.pdsc

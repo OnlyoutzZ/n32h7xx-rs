@@ -1,0 +1,6 @@
+# 把 PMODE0..PMODE15 收成一个数组字段
+# %s 由 svdtools 按字段序号替换，描述里的端口号随之生成。
+GPIOx_PMODE:
+  _array:
+    PMODE*:
+      description: Mode bits for port %s

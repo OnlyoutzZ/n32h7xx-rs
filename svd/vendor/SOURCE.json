@@ -1,0 +1,9 @@
+{
+  "file": "N32H7xx.svd",
+  "sha256": "bed2528b660d13ec2e6e98487778f45e915199e27e4d6d2856d32a71c5ac1eb3",
+  "size": 5014844,
+  "source": "nsing-device-data/projects/n32h7xx 的 svdcheck 交付副本",
+  "origin_pack": "Nationstech.N32H7xx_DFP.1.3.0.pack",
+  "delivered": "2026-10-28",
+  "note": "审计后的 SVD（第七轮原地落地 a58643e7 -> bed2528b）。替换本文件时必须同步更新 sha256，make validate 会校验。"
+}

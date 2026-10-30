@@ -1,0 +1,11 @@
+# Linux script files
+*.sh text eol=lf
+
+# 本文件自身（规则解析对行尾敏感）
+.gitattributes text eol=lf
+
+# Windows 上 core.autocrlf 会把这两个检出成 CRLF：
+# Makefile 带 CRLF 会让 MSYS make 的 recipe 尾部混入 \r 而报错；.py 统一 LF 保持仓库整洁
+Makefile text eol=lf
+Makefile.toml text eol=lf
+*.py text eol=lf

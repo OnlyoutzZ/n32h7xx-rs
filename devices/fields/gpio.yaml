@@ -1,0 +1,10 @@
+# GPIO 模式字段的语义化枚举
+# 取值来源：用户手册 12.UM_N32H78X_AFIO.en.md 的 GPIOx_PMODE 表（PMODE0 行给出编码，
+# PMODE1..15 为 "Refer to PMODE0 [1:0]"），4 个值刚好覆盖 2 位全域，因此写值可用 Safe。
+GPIOx_PMODE:
+  PMODE*:
+    _name: PMode
+    Input: [0, Input mode]
+    Output: [1, General output mode]
+    Alternate: [2, Alternate function mode]
+    Analog: [3, Analog function mode (state after reset)]

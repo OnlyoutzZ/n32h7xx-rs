@@ -1,0 +1,246 @@
+# cargo-make 双轨构建 —— 与 Makefile 等价
+#
+# 两条轨道的关系：
+#   - 生成轨道（本文件）：patch / crates / svd2rust / form / check-patched
+#   - 验收轨道（Makefile 同名目标）：validate / regression / diff-report /
+#     repro-check —— 本文件以命令转发复用，避免双份逻辑
+#
+# 有意选择（README 勘误表有汇总）：
+#   1. 补丁后 SVD 放 build/svds/，与 Makefile 一致
+#   2. 不用 .deps/makedeps 依赖判断（Windows 下 svdtools makedeps 输出 \\?\ verbatim
+#      路径、make/duckscript 都难处理），patch 无条件重打（5MB SVD 秒级完成）
+#   3. default -> pacs：本仓库主产物即 PAC，没有额外的辅助轨
+#   4. settings 由 scripts/makesettings.sh 生成（与 Makefile 共用），无 html_url
+#   5. 无 mmaps / yamls / svdconv / html 辅助轨（本仓库不需要）
+
+env_scripts = ['''
+#!@duckscript
+# devices/<crate>*.yaml -> NAMES（设备主干名，如 n32h760）与 CRATE_NAMES（所属 crate）
+crates = get_env CRATES
+crates = array %{crates}
+NAMES = set ""
+CRATE_NAMES = set ""
+for crate in ${crates}
+    crate_yamls = glob_array devices/${crate}*.yaml
+    for yaml in ${crate_yamls}
+        serie = substring ${yaml} 8
+        serie = substring ${serie} -5
+        NAMES = concat ${NAMES} " " ${serie}
+        CRATE_NAMES = concat ${CRATE_NAMES} " " ${crate}
+    end
+    release ${crate_yamls}
+end
+NAMES = trim ${NAMES}
+set_env NAMES ${NAMES}
+CRATE_NAMES = trim ${CRATE_NAMES}
+set_env CRATE_NAMES ${CRATE_NAMES}
+''']
+
+[tasks.default]
+alias = "pacs"
+
+# 与 Makefile 的 `all: validate pacs` 等价（默认轨道是 pacs，此任务补全校验）
+[tasks.all]
+dependencies = ["validate", "pacs"]
+description = "校验 + 全量生成（= make all）"
+
+[tasks.install]
+command = "bash scripts/tool_install.sh"
+
+# ---- 补丁：厂商 SVD -> build/svds/<设备>.svd.patched ----
+[tasks.patch]
+env = { "SVDTOOLS" = "${SVDTOOLS}", "NAMES" = "${NAMES}" }
+script_runner = "@duckscript"
+script = '''
+mkdir build/svds
+NAMES = array %{NAMES}
+for serie in ${NAMES}
+    echo "patch: ${serie}"
+    command = set ${SVDTOOLS}
+    exec ${command} patch devices/${serie}.yaml build/svds/${serie}.svd.patched
+end
+'''
+
+# ---- crate 骨架：Cargo.toml / build.rs / src/lib.rs / README.md ----
+[tasks.crates]
+env = { "PYTHON" = "${PYTHON}" }
+script_runner = "@duckscript"
+script = '''
+command = set ${PYTHON}
+exec ${command} scripts/makecrates.py devices/ -y --families ${CRATES}
+'''
+
+# ---- 逐设备 svd2rust（cd 进设备目录、--settings、generic.rs 上移）----
+[tasks.svd2rust]
+env = { "CRATES" = "${CRATE_NAMES}" }
+dependencies = ["patch", "crates"]
+script_runner = "@duckscript"
+script = '''
+NAMES = array %{NAMES}
+CRATES = array %{CRATES}
+count = array_length ${NAMES}
+handle = range 0 ${count}
+for i in ${handle}
+    serie = array_get ${NAMES} ${i}
+    crate = array_get ${CRATES} ${i}
+    dir_name = set ${crate}/src/${serie}
+    mkdir ${dir_name}
+    patchedpath = set build/svds/${serie}.svd.patched
+    settings_path = set settings/${serie}.yaml
+    if not is_path_exists ${settings_path}
+        mkdir settings
+        exec bash scripts/makesettings.sh ${serie} ${settings_path}
+    end
+    echo "svd2rust: ${serie}"
+    cd ${dir_name}
+    exec svd2rust -c ../../../svd2rust.toml -i ../../../${patchedpath} --settings "../../../${settings_path}"
+    rm build.rs
+    rm -f ../generic.rs
+    mv generic.rs ../
+    cd ../../..
+    exec rustfmt ${crate}/src/${serie}/mod.rs
+end
+'''
+
+# ---- 逐设备 form 拆分成模块树 ----
+[tasks.form]
+env = { "CRATES" = "${CRATE_NAMES}" }
+dependencies = ["svd2rust"]
+script_runner = "@duckscript"
+script = '''
+NAMES = array %{NAMES}
+CRATES = array %{CRATES}
+count = array_length ${NAMES}
+handle = range 0 ${count}
+for i in ${handle}
+    serie = array_get ${NAMES} ${i}
+    crate = array_get ${CRATES} ${i}
+    dir_name = set ${crate}/src/${serie}
+    modpath = set ${dir_name}/mod.rs
+    formpath = set ${dir_name}/.form
+    mod_modified = get_last_modified_time ${modpath}
+    if is_path_exists ${formpath}
+        form_modified = get_last_modified_time ${formpath}
+        need_update = less_than ${form_modified} ${mod_modified}
+    else
+        need_update = set true
+    end
+    if ${need_update}
+        echo "form: ${serie}"
+        exec form -f -i ${modpath} -o ${dir_name}
+        rm ${modpath}
+        mv ${dir_name}/lib.rs ${modpath}
+        exec rustfmt ${modpath}
+        touch ${formpath}
+    end
+end
+'''
+
+[tasks.pacs]
+dependencies = ["form"]
+
+# ---- 逐设备 cargo check（任务名 check-patched）----
+[tasks.check-patched]
+env = { "CRATES" = "${CRATE_NAMES}" }
+dependencies = ["form"]
+script_runner = "@duckscript"
+script = '''
+NAMES = array %{NAMES}
+CRATES = array %{CRATES}
+count = array_length ${NAMES}
+handle = range 0 ${count}
+for i in ${handle}
+    serie = array_get ${NAMES} ${i}
+    crate = array_get ${CRATES} ${i}
+    dir_name = set ${crate}/src/${serie}
+    modpath = set ${dir_name}/mod.rs
+    checkpath = set ${dir_name}/.check
+    mod_modified = get_last_modified_time ${modpath}
+    if is_path_exists ${checkpath}
+        check_modified = get_last_modified_time ${checkpath}
+        need_update = less_than ${check_modified} ${mod_modified}
+    else
+        need_update = set true
+    end
+    if ${need_update}
+        echo "check: ${serie}"
+        cd ${crate}
+        exec cargo check --target thumbv7em-none-eabihf --features rt,atomics,${serie}
+        cd ..
+        touch ${checkpath}
+    end
+end
+'''
+
+[tasks.check]
+alias = "check-patched"
+
+# ---- probe-rs target YAML（pack -> build/targets/，含双核修复）----
+# Makefile 侧为模式目标 target_<任意型号名>；此处固定名 target（单 pack 全系列，等价）
+[tasks.target]
+env = { "PYTHON" = "${PYTHON}" }
+script_runner = "@duckscript"
+script = '''
+mkdir build/targets
+command = set ${PYTHON}
+exec ${command} scripts/gen_target.py svd/vendor/Nationstech.N32H7xx_DFP.1.3.0.pack build/targets/
+exec ${command} scripts/make_dual_yaml.py build/targets/N32H78x_Series.yaml build/targets/N32H78x_Series_dual.yaml
+'''
+
+# ---- 验收轨道：转发 Makefile 同名目标（校验/回归/差异报告/可重复性）----
+[tasks.validate]
+command = "make validate"
+
+[tasks.regression]
+command = "make regression"
+
+[tasks.diff-report]
+command = "make diff-report"
+
+[tasks.repro-check]
+command = "make repro-check"
+
+# ---- 清理 ----
+[tasks.clean-rs]
+script_runner = "@duckscript"
+script = '''
+handle = glob_array */src/generic.rs
+for file in ${handle}
+    rm ${file}
+end
+if is_path_exists settings
+    rm -r settings
+end
+'''
+
+[tasks.clean-patch]
+script_runner = "@duckscript"
+script = '''
+handle = glob_array build/svds/*.patched
+for file in ${handle}
+    rm ${file}
+end
+'''
+
+[tasks.clean-crates]
+env = { "CRATES" = "${CRATES}" }
+script_runner = "@duckscript"
+script = '''
+rm -r %{CRATES}
+'''
+
+[tasks.clean-all]
+dependencies = ["clean-rs", "clean-patch", "clean-crates"]
+script_runner = "@duckscript"
+script = '''
+if is_path_exists build
+    rm -r build
+end
+'''
+
+[env]
+# Windows 本机（python.org 安装）与 CI（actions/setup-python）都提供 python 命令；
+# 若环境仅有 python3，export PYTHON=python3 覆盖即可。
+PYTHON = { value = "python", condition = { env_not_set = ["PYTHON"] } }
+SVDTOOLS = { value = "svdtools", condition = { env_not_set = ["SVDTOOLS"] } }
+CRATES = { value = "n32h7", condition = { env_not_set = ["CRATES"] } }

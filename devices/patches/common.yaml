@@ -1,0 +1,52 @@
+# devices/patches/common.yaml
+# 多个设备共用的补丁
+#
+# 厂商 N32H7xx.svd 顶层缺少 <cpu> 元素（只有 vendor/name/version/addressUnitBits/width）。
+# svd2rust 生成 Cortex-M 目标代码时依赖 cpu 描述（NVIC 优先级位数、FPU/MPU 有无），
+# 缺失时直接报 "Cannot find cpu" —— 这是本补丁存在的原因。
+#
+# 字段名以 svdtools 0.5.0 的 make_cpu() 为准：
+#   name / revision / endian / mpuPresent / fpuPresent / nvicPrioBits /
+#   vendorSystickConfig / fpuDP / dspPresent / icachePresent / dcachePresent /
+#   itcmPresent / dtcmPresent / vtorPresent / deviceNumInterrupts / sauNumRegions
+
+_modify:
+  cpu:
+    name: CM7
+    revision: r1p1
+    endian: little
+    mpuPresent: true
+    fpuPresent: true
+    nvicPrioBits: 4
+    # svd-rs 校验要求：从零构建 Cpu 时该字段必需
+    vendorSystickConfig: false
+
+# 厂商缺陷 P2H（实测：svd2rust 0.37.1 报 `cannot find type P2h`）：
+# P2H 声明为 <peripheral derivedFrom="H2P">，其余 91 个派生外设都规范地省略了
+# <registers> 元素（继承基外设），唯独 P2H 带了一个空的 <registers />。
+# 空元素把"继承"覆盖成了"显式零寄存器"，svd2rust 于是在 Peripherals 里生成
+# `pub p2h: P2h` 却不生成 P2h 类型。
+# 修法：把 H2P 的寄存器复制进 P2H（_copy 保留 P2H 自己的 baseAddress 与中断，
+# 并清掉 derivedFrom）。H2P/P2H 本就是同一 JPEG DMA 的两个方向，寄存器集一致。
+_copy:
+  P2H:
+    from: H2P
+
+# 厂商缺陷 LPUART_CTRL（仅 strict 模式下阻断，旧流水线未开 strict 时被忽略）：
+# resetValue=0x00000200（bit9=1）落在自家 resetMask=0x01fffdff 之外，svd2rust 严格
+# 校验报 `Reset value 0x200 conflicts with mask '0x1fffdff'`。
+# 实测 bit9 属于 RTST 字段（bitOffset=8、bitWidth=2，即 bit 8..9），全部字段并集为
+# 0x01FFFFFF（bit0..24）——厂商 resetMask 就是笔误漏了 bit9（resetValue 自己都置了
+# 它）。修法：把 resetMask 补全为字段并集。resetMask 只参与 SVD 校验、不进入生成
+# 代码，resetValue 保持 0x200 不动（不改变硬件语义）。
+# 修在 LPUART1 下：svdtools 顶层键是外设名（不能直接写寄存器名）；LPUART2
+# derivedFrom LPUART1、无独立寄存器定义，会继承本修正。
+LPUART1:
+  _modify:
+    LPUART_CTRL:
+      resetMask: 0x01FFFFFF
+
+# 原厂商缺陷 GPV_FERID4 字段名 `4KBCOT`（数字开头，非法 Rust 标识符）：
+# 2026-10-28 审计 SVD 已同步进 svd/vendor/N32H7xx.svd，源字段本身已命名为
+# `_4KBCOT`（审计流水线的命名修复），本补丁不再需要。保留旧写法则 svdtools
+# 会报 `Could not find GPV.GPV_FERID4:4KBCOT` 并中断，故整段移除。
